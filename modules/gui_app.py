@@ -37,10 +37,11 @@ class GUIApp:
         self.mock_root: Optional[tk.Toplevel] = None
         self.mock_indicators: Dict = {}
         self.lbl_pattern: Optional[tk.Label] = None 
-        self.canvas_insp: Optional[tk.Canvas] = None
         self.btn_help: Optional[tk.Button] = None
         
         self.ng_history: List[Tuple[str, str]] = [] # [(message, image_path), ...]
+        self.canvas_images: Dict[int, tk.Canvas] = {} # canvas_id -> image_id
+        self.tk_images: Dict[int, PIL.ImageTk.PhotoImage] = {} # canvas_id -> current_image
         
         self._init_cameras()
         self._setup_ui()
@@ -202,44 +203,87 @@ class GUIApp:
             pass
 
     def _build_side_panel(self, parent):
-        p = tk.Frame(parent, bg=COLOR_BG_PANEL, padx=20, pady=20)
+        p = tk.Frame(parent, bg=COLOR_BG_PANEL, padx=15, pady=15)
         p.pack(fill=tk.BOTH, expand=True)
 
-        # 1. 現在パターン (正解文字)
-        tk.Label(p, text="正解文字", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(anchor=tk.W)
-        self.lbl_pattern = tk.Label(p, text="---", font=FONT_HUGE, bg=COLOR_BG_INPUT, fg=COLOR_ACCENT_STRONG, pady=15)
-        self.lbl_pattern.pack(fill=tk.X, pady=10)
+        # 1. 運用ステータス (ダッシュボード風)
+        status_f = tk.LabelFrame(p, text=" 稼働ステータス ", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_ACCENT, padx=10, pady=10)
+        status_f.pack(fill=tk.X, pady=(0, 15))
+        
+        # 状態表示行
+        self.lbl_mode = tk.Label(status_f, text="● 待機中", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, anchor="w")
+        self.lbl_mode.pack(fill=tk.X)
+        
+        # CPU/FPS メーター (簡易表示)
+        self.lbl_perf = tk.Label(status_f, text="FPS: -- | CPU: --", font=(FONT_FAMILY, 10), bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB, anchor="w")
+        self.lbl_perf.pack(fill=tk.X, pady=(5, 0))
+        
+        # GPIO インジケータ
+        gpio_f = tk.Frame(status_f, bg=COLOR_BG_PANEL)
+        gpio_f.pack(fill=tk.X, pady=(5, 0))
+        self.led_gpio = tk.Canvas(gpio_f, width=12, height=12, bg=COLOR_BG_PANEL, highlightthickness=0)
+        self.led_gpio.pack(side=tk.LEFT)
+        self.led_gpio_circ = self.led_gpio.create_oval(2, 2, 10, 10, fill=COLOR_OK if not self.gpio.is_mock else COLOR_WARNING)
+        tk.Label(gpio_f, text="GPIO 接続中" if not self.gpio.is_mock else "GPIO モック動作中", font=(FONT_FAMILY, 10), bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(side=tk.LEFT, padx=5)
 
-        # 2. NG履歴リスト
-        tk.Label(p, text="NG 履歴", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(anchor=tk.W, pady=(20, 0))
-        history_f = tk.Frame(p, bg=COLOR_BG_PANEL)
-        history_f.pack(fill=tk.BOTH, expand=True, pady=10)
-        self.lst_history = tk.Listbox(history_f, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg="white", bd=0, highlightthickness=0)
+        # 2. 照合文字表示 (カード)
+        pat_f = tk.LabelFrame(p, text=" 照合基準文字 ", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_ACCENT, padx=10, pady=10)
+        pat_f.pack(fill=tk.X, pady=(0, 15))
+        self.lbl_pattern = tk.Label(pat_f, text="---", font=FONT_HUGE, bg=COLOR_BG_INPUT, fg=COLOR_ACCENT_STRONG, pady=10)
+        self.lbl_pattern.pack(fill=tk.X)
+
+        # 3. NG履歴リスト (スクロール付きカード)
+        hist_f = tk.LabelFrame(p, text=" 不一致(NG)履歴 ", font=FONT_BOLD, bg=COLOR_BG_PANEL, fg=COLOR_ACCENT, padx=10, pady=10)
+        hist_f.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        
+        history_inner = tk.Frame(hist_f, bg=COLOR_BG_PANEL)
+        history_inner.pack(fill=tk.BOTH, expand=True)
+        
+        self.lst_history = tk.Listbox(history_inner, font=FONT_NORMAL, bg=COLOR_BG_INPUT, fg="white", bd=0, highlightthickness=0, selectbackground=COLOR_ACCENT)
         self.lst_history.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb = ttk.Scrollbar(history_f, orient="vertical", command=self.lst_history.yview)
+        sb = ttk.Scrollbar(history_inner, orient="vertical", command=self.lst_history.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.lst_history.config(yscrollcommand=sb.set)
         self.lst_history.bind("<Double-Button-1>", self._on_history_click)
 
-        # 3. 操作ボタン
-        btn_f = tk.Frame(p, bg=COLOR_BG_PANEL, pady=20)
-        btn_f.pack(fill=tk.X, side=tk.BOTTOM)
-        
-        btn_history_reset = tk.Button(btn_f, text="履歴リセット", font=FONT_BOLD, bg="#546E7A", fg="white", relief=tk.FLAT, height=2, command=self._reset_history)
-        btn_history_reset.pack(fill=tk.X, pady=5)
-        ToolTip(btn_history_reset, "NG履歴リストをクリアします")
+        # 4. 操作ボタン (機能別にセクション化)
+        btn_container = tk.Frame(p, bg=COLOR_BG_PANEL)
+        btn_container.pack(fill=tk.X, side=tk.BOTTOM)
 
-        btn_buzzer_stop = tk.Button(btn_f, text="ブザー停止", font=FONT_BOLD, bg=COLOR_NG, fg="white", relief=tk.FLAT, height=2, command=self._stop_buzzer)
-        btn_buzzer_stop.pack(fill=tk.X, pady=5)
-        ToolTip(btn_buzzer_stop, "OK/NG信号およびブザー出力を停止します")
+        # 【運用・緊急】
+        tk.Label(btn_container, text="運用操作", font=(FONT_FAMILY, 11, "bold"), bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(anchor="w", pady=(0, 5))
+        btn_buzzer_stop = tk.Button(btn_container, text="アラーム・ブザー停止", font=FONT_BOLD, bg=COLOR_NG, fg="white", relief=tk.FLAT, height=2, command=self._stop_buzzer)
+        btn_buzzer_stop.pack(fill=tk.X, pady=(0, 15))
+        ToolTip(btn_buzzer_stop, "OK/NG信号およびブザー出力を強制停止します")
 
-        btn_settings = tk.Button(btn_f, text="詳細設定", font=FONT_BOLD, bg="#455A64", fg="white", relief=tk.FLAT, height=2, command=self._open_settings)
-        btn_settings.pack(fill=tk.X, pady=5)
-        ToolTip(btn_settings, "カメラ設定や判定閾値などの詳細設定画面を開きます")
+        # 【メンテナンス】
+        tk.Label(btn_container, text="管理・設定", font=(FONT_FAMILY, 11, "bold"), bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB).pack(anchor="w", pady=(0, 5))
+        maint_f = tk.Frame(btn_container, bg=COLOR_BG_PANEL)
+        maint_f.pack(fill=tk.X)
+        maint_f.columnconfigure(0, weight=1)
+        maint_f.columnconfigure(1, weight=1)
+
+        btn_history_reset = tk.Button(maint_f, text="履歴クリア", font=FONT_BOLD, bg="#546E7A", fg="white", relief=tk.FLAT, height=2, command=self._reset_history)
+        btn_history_reset.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        ToolTip(btn_history_reset, "NG履歴リストを全て消去します")
+
+        btn_settings = tk.Button(maint_f, text="詳細設定", font=FONT_BOLD, bg="#455A64", fg="white", relief=tk.FLAT, height=2, command=self._open_settings)
+        btn_settings.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        ToolTip(btn_settings, "カメラ設定やIO割り当てなどの詳細画面を開きます")
 
     def _update_clock(self):
         if self.is_running:
-            self.lbl_clock.config(text=datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
+            now = datetime.now()
+            self.lbl_clock.config(text=now.strftime("%Y/%m/%d %H:%M:%S"))
+            
+            # FPS計算とパフォーマンス表示
+            try:
+                import psutil
+                cpu = psutil.cpu_percent()
+                self.lbl_perf.config(text=f"CPU: {cpu}% | RAM: {psutil.virtual_memory().percent}%")
+            except:
+                pass
+            
             self.root.after(1000, self._update_clock)
 
     def _show_help(self):
@@ -343,14 +387,24 @@ class GUIApp:
                 self.root.after(200, self._update_preview)
             return
         
-        if self.cm.get("preview_res", "640x480") == "none_preview":
+        # プレビュー解像度取得
+        prev_res = self.cm.get("preview_res", "640x480")
+        if prev_res == "none_preview":
             self.root.after(200, self._update_preview)
             return
+
+        try:
+            pw, ph = map(int, prev_res.split('x'))
+        except:
+            pw, ph = 640, 480
             
         for cam, canvas, key in [(self.cam_ref, self.canvas_ref, "crop_ref_text"), (self.cam_insp, self.canvas_insp, "crop_insp_text")]:
             if cam:
                 frame = cam.get_frame()
                 if frame is not None:
+                    # 早めにリサイズして以降の処理負荷を軽減 (4K等の高解像度対策)
+                    frame = cv2.resize(frame, (pw, ph))
+                    
                     # 反転処理 (検査カメラのみ)
                     if "insp" in key:
                         h, v = self.cm.get("flip_insp_h"), self.cm.get("flip_insp_v")
@@ -358,7 +412,7 @@ class GUIApp:
                         elif h: frame = cv2.flip(frame, 1)
                         elif v: frame = cv2.flip(frame, 0)
                     
-                    # ROI枠描画 (相対比率をピクセルに変換)
+                    # ROI枠描画
                     roi = self.cm.get(key)
                     if roi and len(roi) == 4:
                         fh, fw = frame.shape[:2]
@@ -367,7 +421,10 @@ class GUIApp:
                         py1 = int(min(ry1, ry2) * fh)
                         px2 = int(max(rx1, rx2) * fw)
                         py2 = int(max(ry1, ry2) * fh)
-                        cv2.rectangle(frame, (px1, py1), (px2, py2), (0, 255, 255), 2)
+                        
+                        # 状態に応じたROI色 (待機:黄, 検査中:青, OK/NG後:暫くそのまま)
+                        roi_col = (0, 255, 255) # Yellow
+                        cv2.rectangle(frame, (px1, py1), (px2, py2), roi_col, 2)
                     
                     self._display_image(canvas, frame)
         
@@ -383,13 +440,19 @@ class GUIApp:
         cw, ch = canvas.winfo_width(), canvas.winfo_height()
         if cw < 50: return
         
+        # 既にcv2.resize済みだがキャンバスサイズに微調整
         img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img_pil = PIL.Image.fromarray(img_rgb)
-        img_pil.thumbnail((cw, ch), PIL.Image.LANCZOS)
+        img_pil.thumbnail((cw, ch), PIL.Image.NEAREST) # 高速なリサンプリング
         img_tk = PIL.ImageTk.PhotoImage(img_pil)
         
-        canvas.image = img_tk
-        canvas.create_image(cw//2, ch//2, image=img_tk, anchor=tk.CENTER)
+        c_id = id(canvas)
+        self.tk_images[c_id] = img_tk # 参照保持
+        
+        if c_id in self.canvas_images:
+            canvas.itemconfig(self.canvas_images[c_id], image=img_tk)
+        else:
+            self.canvas_images[c_id] = canvas.create_image(cw//2, ch//2, image=img_tk, anchor=tk.CENTER)
 
     def _inspection_loop(self):
         logger.info("Inspection loop started.")
@@ -538,7 +601,10 @@ class GUIApp:
 
     def _update_ui_state(self, status, message, color):
         def _apply():
-            # 共通要件 §4-2-1 に準拠した配色設定
+            # パルス（点滅）効果のための状態更新
+            mode_prefix = "●" if color == COLOR_ACCENT else "■"
+            self.lbl_mode.config(text=f"{mode_prefix} {status}", fg=color if color != COLOR_BG_PANEL else COLOR_TEXT_SUB)
+
             if color == COLOR_OK:
                 bg_col, fg_col = COLOR_OK, "black"
             elif color == COLOR_NG:
@@ -546,28 +612,24 @@ class GUIApp:
             elif color == COLOR_WARNING:
                 bg_col, fg_col = COLOR_WARNING, "black"
             elif color == COLOR_ACCENT:
-                # 検査中/動作中
                 bg_col, fg_col = COLOR_ACCENT, "black"
             else:
-                # 待機中
                 bg_col, fg_col = COLOR_BG_PANEL, COLOR_ACCENT
 
             self.lbl_status.config(text=f"{status} {message}", fg=fg_col, bg=bg_col)
             self.header.config(bg=bg_col)
             self.lbl_clock.config(bg=bg_col)
-            self.header.winfo_children() # Dummy for context
-            
-            # ヘッダー内の全ウィジェットの背景を合わせる（ボタン以外）
+            # 子要素の更新
             for w in self.header.winfo_children():
                 try:
                     if not isinstance(w, tk.Button):
                         w.config(bg=bg_col)
-                        # 文字色も適切に
                         if bg_col == COLOR_BG_PANEL:
                             if w == self.lbl_status: w.config(fg=COLOR_ACCENT)
                         else:
                             w.config(fg=fg_col)
                 except: pass
+
         self.root.after(0, _apply)
 
     def _add_to_history(self, msg, img_path=None):
