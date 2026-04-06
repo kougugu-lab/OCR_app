@@ -76,6 +76,7 @@ class Inspector:
         # 画像保存
         # 規約 (§11-1): {判定}_{パターン}_{カメラ}_{日付時刻14桁}.jpg
         safe_pattern = "".join([c for c in (pattern if pattern else "None") if c not in '<>:"/\\|?*'])
+        saved_paths = {}
         
         for img, cam_name in [(img_ref, "REF"), (img_insp, "INSP")]:
             if img is not None:
@@ -94,7 +95,9 @@ class Inspector:
                     resized = cv2.resize(img, (target_w, int(h * (target_w / w))))
                 
                 fname = f"{result}_{safe_pattern}_{cam_name}_{ts_full}_{score:.2f}.jpg"
-                cv2.imwrite(os.path.join(img_dir, fname), resized)
+                save_path = os.path.join(img_dir, fname)
+                cv2.imwrite(save_path, resized)
+                saved_paths[cam_name] = save_path
         
         # CSVログ保存
         # ユーザー要望により日本語ヘッダーを使用 (規約 §11-2 より優先)
@@ -120,6 +123,7 @@ class Inspector:
             print(f"CSV Save Error: {e}")
             
         self.check_and_cleanup_disk()
+        return saved_paths.get("INSP")
 
     def check_and_cleanup_disk(self):
         """ディスク容量を確認し、設定された上限(GB)を超えている場合に古いファイルを削除"""

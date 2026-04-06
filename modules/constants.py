@@ -1,6 +1,10 @@
 import os
 import platform
 
+# --- バージョン定義 ---
+VERSION = "1.3.0"
+BUILD_DATE = "2026-04-06"
+
 # --- ディレクトリ定義 ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOG_DIR = os.path.join(BASE_DIR, "results", "logs")

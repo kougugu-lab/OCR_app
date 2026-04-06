@@ -10,8 +10,8 @@ from .constants import *
 from .camera_manager import CameraStream
 from .gpio_handler import GPIOHandler
 from .inspector import Inspector
-from .settings_dialog import SettingsDialog, HelpWindow
-from typing import Optional, Dict
+from .widgets import ToolTip, HelpWindow
+from typing import Optional, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,10 @@ class GUIApp:
         self.mock_root: Optional[tk.Toplevel] = None
         self.mock_indicators: Dict = {}
         self.lbl_pattern: Optional[tk.Label] = None 
-        self.lst_history: Optional[tk.Listbox] = None 
-        self.canvas_ref: Optional[tk.Canvas] = None
         self.canvas_insp: Optional[tk.Canvas] = None
         self.btn_help: Optional[tk.Button] = None
+        
+        self.ng_history: List[Tuple[str, str]] = [] # [(message, image_path), ...]
         
         self._init_cameras()
         self._setup_ui()
@@ -99,6 +99,11 @@ class GUIApp:
         # 時計
         self.lbl_clock = tk.Label(self.header, text="", font=FONT_LARGE, bg=COLOR_BG_PANEL, fg=COLOR_TEXT_MAIN)
         self.lbl_clock.pack(side=tk.RIGHT, padx=30)
+
+        # バージョン表示 (規約 §10-352)
+        ver_lbl = tk.Label(self.header, text=f"v{VERSION} ({BUILD_DATE})", font=(FONT_FAMILY, 10), 
+                           bg=COLOR_BG_PANEL, fg=COLOR_TEXT_SUB)
+        ver_lbl.pack(side=tk.RIGHT, padx=5)
 
         # ヘルプボタン
         self.btn_help = tk.Button(self.header, text="？", font=FONT_BOLD, bg=COLOR_BG_INPUT, fg=COLOR_ACCENT, 
@@ -220,9 +225,17 @@ class GUIApp:
         btn_f = tk.Frame(p, bg=COLOR_BG_PANEL, pady=20)
         btn_f.pack(fill=tk.X, side=tk.BOTTOM)
         
-        tk.Button(btn_f, text="履歴リセット", font=FONT_BOLD, bg="#546E7A", fg="white", relief=tk.FLAT, height=2, command=self._reset_history).pack(fill=tk.X, pady=5)
-        tk.Button(btn_f, text="ブザー停止", font=FONT_BOLD, bg=COLOR_NG, fg="white", relief=tk.FLAT, height=2, command=self._stop_buzzer).pack(fill=tk.X, pady=5)
-        tk.Button(btn_f, text="詳細設定", font=FONT_BOLD, bg="#455A64", fg="white", relief=tk.FLAT, height=2, command=self._open_settings).pack(fill=tk.X, pady=5)
+        btn_history_reset = tk.Button(btn_f, text="履歴リセット", font=FONT_BOLD, bg="#546E7A", fg="white", relief=tk.FLAT, height=2, command=self._reset_history)
+        btn_history_reset.pack(fill=tk.X, pady=5)
+        ToolTip(btn_history_reset, "NG履歴リストをクリアします")
+
+        btn_buzzer_stop = tk.Button(btn_f, text="ブザー停止", font=FONT_BOLD, bg=COLOR_NG, fg="white", relief=tk.FLAT, height=2, command=self._stop_buzzer)
+        btn_buzzer_stop.pack(fill=tk.X, pady=5)
+        ToolTip(btn_buzzer_stop, "OK/NG信号およびブザー出力を停止します")
+
+        btn_settings = tk.Button(btn_f, text="詳細設定", font=FONT_BOLD, bg="#455A64", fg="white", relief=tk.FLAT, height=2, command=self._open_settings)
+        btn_settings.pack(fill=tk.X, pady=5)
+        ToolTip(btn_settings, "カメラ設定や判定閾値などの詳細設定画面を開きます")
 
     def _update_clock(self):
         if self.is_running:
@@ -269,17 +282,58 @@ class GUIApp:
     def _reset_history(self):
         if messagebox.askyesno("確認", "履歴をリセットしますか？"):
             self.lst_history.delete(0, tk.END)
-            # 履歴の保存が必要な場合はここに追記
+            self.ng_history.clear()
 
     def _stop_buzzer(self):
         """ブザー（NG信号・OK信号）を停止"""
         self.gpio.stop_outputs()
 
     def _on_history_click(self, event):
-        idx = self.lst_history.curselection()
-        if idx:
-            # 画像表示などの処理
-            pass
+        idx_tuple = self.lst_history.curselection()
+        if not idx_tuple: return
+        idx = idx_tuple[0]
+        if idx < len(self.ng_history):
+            msg, img_path = self.ng_history[idx]
+            if img_path and os.path.exists(img_path):
+                self._show_ng_image(msg, img_path)
+            else:
+                messagebox.showinfo("情報", "該当する画像ファイルが見つかりません。")
+
+    def _show_ng_image(self, title, path):
+        win = tk.Toplevel(self.root)
+        win.title(f"NG詳細: {os.path.basename(path)}")
+        win.geometry("800x650")
+        win.configure(bg=COLOR_BG_MAIN)
+        win.transient(self.root)
+        
+        lbl_info = tk.Label(win, text=title, font=FONT_BOLD, bg=COLOR_BG_MAIN, fg=COLOR_NG, pady=10)
+        lbl_info.pack()
+        
+        canvas = tk.Canvas(win, bg="black", highlightthickness=0)
+        canvas.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
+        
+        # 画像読み込み表示
+        def _load():
+            try:
+                img = cv2.imread(path)
+                if img is None: return
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                
+                win.update_idletasks()
+                cw, ch = canvas.winfo_width(), canvas.winfo_height()
+                if cw < 10: cw, ch = 760, 500
+                
+                pil_img = PIL.Image.fromarray(img)
+                pil_img.thumbnail((cw, ch), PIL.Image.LANCZOS)
+                img_tk = PIL.ImageTk.PhotoImage(pil_img)
+                canvas.image = img_tk
+                canvas.create_image(cw//2, ch//2, image=img_tk, anchor=tk.CENTER)
+            except Exception as e:
+                logger.error(f"Failed to load NG image: {e}")
+        
+        win.after(100, _load)
+        tk.Button(win, text="閉じる", font=FONT_BOLD, bg="#546E7A", fg="white", 
+                  relief=tk.FLAT, padx=30, command=win.destroy).pack(pady=10)
 
     # --- プレビュー表示 ---
     def _update_preview(self):
@@ -403,9 +457,10 @@ class GUIApp:
                     else:
                         logger.info(f"Match NG: Ref='{ref_text}' Insp='{insp_text}'")
                         self._update_ui_state("NG", f"NG: 正解[{display_ref}] / 検出[{insp_text}]", COLOR_NG)
-                        self.inspector.save_evidence(img_ref, img_insp, "NG", ref_text, insp_score)
+                        path = self.inspector.save_evidence(img_ref, img_insp, "NG", ref_text, insp_score)
                         self.gpio.output_ng()
-                        self._add_to_history(f"{datetime.now().strftime('%H:%M:%S')} NG: 正解[{display_ref}] / 検出[{insp_text}]")
+                        msg = f"{datetime.now().strftime('%H:%M:%S')} NG: [{display_ref}] / [{insp_text}]"
+                        self._add_to_history(msg, path)
                     
                     time.sleep(self.cm.get("result_display_duration", 3.0))
                     
@@ -469,8 +524,10 @@ class GUIApp:
                                 logger.info(f"Match NG: Ref='{ref_text}' Insp='{insp_text}'")
                                 # NG時は一度抜けて再度正解文字読み取りから直すか、あるいは一定時間表示して継続
                                 self._update_ui_state("NG", f"NG: 正解[{ref_text}] / 検出[{insp_text}]", COLOR_NG)
-                                self.inspector.save_evidence(img_ref, img_insp, "NG", ref_text, insp_score)
+                                path = self.inspector.save_evidence(img_ref, img_insp, "NG", ref_text, insp_score)
                                 self.gpio.output_ng()
+                                msg = f"{datetime.now().strftime('%H:%M:%S')} NG: [{ref_text}] / [{insp_text}]"
+                                self._add_to_history(msg, path)
                                 time.sleep(self.cm.get("result_display_duration", 3.0))
                                 break
                         time.sleep(0.1)
@@ -498,16 +555,30 @@ class GUIApp:
             self.lbl_status.config(text=f"{status} {message}", fg=fg_col, bg=bg_col)
             self.header.config(bg=bg_col)
             self.lbl_clock.config(bg=bg_col)
+            self.header.winfo_children() # Dummy for context
+            
             # ヘッダー内の全ウィジェットの背景を合わせる（ボタン以外）
             for w in self.header.winfo_children():
                 try:
                     if not isinstance(w, tk.Button):
                         w.config(bg=bg_col)
+                        # 文字色も適切に
+                        if bg_col == COLOR_BG_PANEL:
+                            if w == self.lbl_status: w.config(fg=COLOR_ACCENT)
+                        else:
+                            w.config(fg=fg_col)
                 except: pass
         self.root.after(0, _apply)
 
-    def _add_to_history(self, msg):
-        self.root.after(0, lambda: self.lst_history.insert(0, msg))
+    def _add_to_history(self, msg, img_path=None):
+        def _apply():
+            self.lst_history.insert(0, msg)
+            self.ng_history.insert(0, (msg, img_path))
+            # 履歴が多くなりすぎないよう制限
+            if self.lst_history.size() > 100:
+                self.lst_history.delete(100, tk.END)
+                self.ng_history = self.ng_history[:100]
+        self.root.after(0, _apply)
 
     def _open_settings(self):
         cameras = {'ref': self.cam_ref, 'insp': self.cam_insp}
