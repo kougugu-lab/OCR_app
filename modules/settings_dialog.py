@@ -31,6 +31,7 @@ class SettingsDialog:
         self._drag_canvas = None
         self._roi_draft = {"crop_ref_text": None, "crop_insp_text": None}
         self._confirm_btns = {}
+        self.last_preview_ids = {"ref": -1, "insp": -1}
 
         style = ttk.Style()
         style.theme_use('default')
@@ -445,7 +446,7 @@ class SettingsDialog:
                 return w, h
         except Exception:
             pass
-        fr = cam.get_frame()
+        fr, _ = cam.get_frame() if cam else (None, 0)
         if fr is not None:
             return fr.shape[1], fr.shape[0]
         return 1280, 720
@@ -458,7 +459,13 @@ class SettingsDialog:
         if cw < 10 or ch < 10:
             return
         cam = self.cameras.get(cam_key) if self.cameras else None
-        frame = cam.get_frame() if cam else None
+        frame, fid = cam.get_frame() if cam else (None, 0)
+        
+        # 前回の描画と同じフレームIDなら処理をスキップ
+        if frame is not None and self.last_preview_ids.get(cam_key) == fid:
+            return
+        self.last_preview_ids[cam_key] = fid
+
         cam_w, cam_h = self._preview_cam_dims(cam)
         crop_key = self._crop_key_for_cam(cam_key)
         draft = self._roi_draft.get(crop_key)
@@ -581,7 +588,7 @@ class SettingsDialog:
         if not roi or len(roi) < 4:
             messagebox.showerror("Error", "検出エリアがありません。プレビュー上でドラッグして「範囲確定」してください。", parent=self.sw)
             return
-        frame = cam.get_frame()
+        frame, _ = cam.get_frame() if cam else (None, 0)
         if frame is None:
             messagebox.showerror("Error", "カメラから画像を取得できません。")
             return

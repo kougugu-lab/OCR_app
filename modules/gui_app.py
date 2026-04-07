@@ -42,6 +42,7 @@ class GUIApp:
         self.ng_history: List[Tuple[str, str]] = [] # [(message, image_path), ...]
         self.canvas_images: Dict[int, tk.Canvas] = {} # canvas_id -> image_id
         self.tk_images: Dict[int, PIL.ImageTk.PhotoImage] = {} # canvas_id -> current_image
+        self.last_preview_ids: Dict[int, int] = {} # canvas_id -> last_drawn_frame_id
         
         self._init_cameras()
         self._setup_ui()
@@ -400,8 +401,14 @@ class GUIApp:
             
         for cam, canvas, key in [(self.cam_ref, self.canvas_ref, "crop_ref_text"), (self.cam_insp, self.canvas_insp, "crop_insp_text")]:
             if cam:
-                frame = cam.get_frame()
+                frame, fid = cam.get_frame()
                 if frame is not None:
+                    # 前回の描画と同じフレームIDなら処理をスキップ
+                    c_id = id(canvas)
+                    if self.last_preview_ids.get(c_id) == fid:
+                        continue
+                    self.last_preview_ids[c_id] = fid
+
                     # 早めにリサイズして以降の処理負荷を軽減 (4K等の高解像度対策)
                     frame = cv2.resize(frame, (pw, ph))
                     
@@ -478,8 +485,8 @@ class GUIApp:
                         continue
                     
                     self._update_ui_state("検査中", "画像取得およびOCR判定中", COLOR_ACCENT)
-                    img_ref = self.cam_ref.get_frame() if self.cam_ref else None
-                    img_insp = self.cam_insp.get_frame() if self.cam_insp else None
+                    img_ref, _ = self.cam_ref.get_frame() if self.cam_ref else (None, 0)
+                    img_insp, _ = self.cam_insp.get_frame() if self.cam_insp else (None, 0)
                     
                     ref_text, ref_score = self.inspector.get_ocr(img_ref, self.cm.get("crop_ref_text")) if img_ref is not None else ("", 0.0)
                     
@@ -529,7 +536,7 @@ class GUIApp:
                     
                 else:
                     # --- トリガー無効モード (自動モード) ---
-                    img_ref = self.cam_ref.get_frame() if self.cam_ref else None
+                    img_ref, _ = self.cam_ref.get_frame() if self.cam_ref else (None, 0)
                     ref_text, ref_score = self.inspector.get_ocr(img_ref, self.cm.get("crop_ref_text")) if img_ref is not None else ("", 0.0)
                     
                     if not ref_text:
@@ -555,7 +562,7 @@ class GUIApp:
                     
                     while self.is_running and not self.cm.get("mode_trigger") and not self.is_paused:
                         self._update_ui_state("検査中", f"正解:[{ref_text}] 照合中", COLOR_ACCENT)
-                        img_insp = self.cam_insp.get_frame() if self.cam_insp else None
+                        img_insp, _ = self.cam_insp.get_frame() if self.cam_insp else (None, 0)
                         if img_insp is not None:
                             h, v = self.cm.get("flip_insp_h"), self.cm.get("flip_insp_v")
                             if h and v: img_insp = cv2.flip(img_insp, -1)
@@ -643,6 +650,7 @@ class GUIApp:
         self.root.after(0, _apply)
 
     def _open_settings(self):
+        from .settings_dialog import SettingsDialog
         cameras = {'ref': self.cam_ref, 'insp': self.cam_insp}
         SettingsDialog(self.root, self.cm, self.gpio, cameras, on_save_callback=self._on_settings_saved)
 

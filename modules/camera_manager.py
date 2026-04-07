@@ -5,6 +5,7 @@ import time
 class CameraStream:
     def __init__(self, src, width, height, focus=None):
         self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # バッファを取り除き遅延を最小化
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         
@@ -18,6 +19,7 @@ class CameraStream:
             self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
 
         self.frame = None
+        self.frame_id = 0
         self.running = True
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self.update, daemon=True)
@@ -32,12 +34,14 @@ class CameraStream:
             if ret:
                 with self.lock:
                     self.frame = frame
+                    self.frame_id += 1
             else:
                 time.sleep(0.01)
 
     def get_frame(self):
+        """戻り値: (フレーム画像, フレームID)"""
         with self.lock:
-            return self.frame.copy() if self.frame is not None else None
+            return (self.frame.copy() if self.frame is not None else None), self.frame_id
 
     def release(self):
         self.running = False
