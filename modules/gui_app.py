@@ -265,11 +265,15 @@ class GUIApp:
         maint_f.columnconfigure(1, weight=1)
 
         btn_history_reset = tk.Button(maint_f, text="履歴クリア", font=FONT_BOLD, bg="#546E7A", fg="white", relief=tk.FLAT, height=2, command=self._reset_history)
-        btn_history_reset.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
+        btn_history_reset.grid(row=0, column=0, sticky="nsew", padx=(0, 2), pady=(0, 5))
         ToolTip(btn_history_reset, "NG履歴リストを全て消去します")
 
+        btn_results_folder = tk.Button(maint_f, text="結果フォルダ", font=FONT_BOLD, bg="#546E7A", fg="white", relief=tk.FLAT, height=2, command=self._open_results_folder)
+        btn_results_folder.grid(row=0, column=1, sticky="nsew", padx=(2, 0), pady=(0, 5))
+        ToolTip(btn_results_folder, "画像が保存されている結果フォルダを開きます")
+
         btn_settings = tk.Button(maint_f, text="詳細設定", font=FONT_BOLD, bg="#455A64", fg="white", relief=tk.FLAT, height=2, command=self._open_settings)
-        btn_settings.grid(row=0, column=1, sticky="nsew", padx=(5, 0))
+        btn_settings.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(5, 0))
         ToolTip(btn_settings, "カメラ設定やIO割り当てなどの詳細画面を開きます")
 
     def _update_clock(self):
@@ -328,6 +332,30 @@ class GUIApp:
         if messagebox.askyesno("確認", "履歴をリセットしますか？"):
             self.lst_history.delete(0, tk.END)
             self.ng_history.clear()
+
+    def _open_results_folder(self):
+        """結果画像フォルダをOSのファイルマネージャーで開く"""
+        # config 内に results_dir があるか確認 (constants.py で定義されたデフォルトを使用)
+        base = self.cm.get("result_dir")
+        if not base:
+            base = os.path.join(BASE_DIR, "results")
+        
+        folder = os.path.join(base, "images")
+        if not os.path.exists(folder):
+            os.makedirs(folder, exist_ok=True)
+            
+        try:
+            if IS_WINDOWS:
+                os.startfile(folder)
+            elif platform.system() == "Linux":
+                import subprocess
+                subprocess.Popen(["xdg-open", folder])
+            else:
+                import subprocess
+                subprocess.Popen(["open", folder])
+        except Exception as e:
+            logger.error(f"Failed to open results folder: {e}")
+            messagebox.showerror("エラー", f"フォルダを開けませんでした:\n{folder}", parent=self.root)
 
     def _stop_buzzer(self):
         """ブザー（NG信号・OK信号）を停止"""
