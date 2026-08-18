@@ -320,8 +320,16 @@ class SettingsDialog:
         sb = tk.Spinbox(
             box, from_=0, to=1023, increment=1, textvariable=v, width=8,
             font=FONT_SET_VAL, bg=COLOR_BG_INPUT, fg="white", buttonbackground="#78909C",
-            bd=1, relief=tk.SOLID,
+            bd=1, relief=tk.SOLID, repeatdelay=0, repeatinterval=0,
         )
+        def _stop_repeat(event=None):
+            try:
+                rep_id = sb.tk.call('set', '::tk::spinbox::Repeater')
+                if rep_id: sb.tk.call('after', 'cancel', rep_id)
+            except Exception: pass
+        sb.bind("<ButtonRelease-1>", _stop_repeat, add="+")
+        sb.bind("<Leave>", _stop_repeat, add="+")
+        sb.bind("<FocusOut>", _stop_repeat, add="+")
         sb.pack(side=tk.LEFT)
         v.trace_add("write", lambda *args: self._mark_changed())
 
@@ -340,7 +348,15 @@ class SettingsDialog:
         v = tk.IntVar(value=v_val)
         self.vars[key] = v
         box = tk.Frame(parent, bg=parent["bg"])
-        sb = tk.Spinbox(box, from_=f, to=t, increment=i, textvariable=v, font=FONT_SET_VAL, bg=COLOR_BG_INPUT, fg="white", buttonbackground="#78909C", bd=1, relief=tk.SOLID, command=self._mark_changed)
+        sb = tk.Spinbox(box, from_=f, to=t, increment=i, textvariable=v, font=FONT_SET_VAL, bg=COLOR_BG_INPUT, fg="white", buttonbackground="#78909C", bd=1, relief=tk.SOLID, command=self._mark_changed, repeatdelay=0, repeatinterval=0)
+        def _stop_repeat_sb(event=None):
+            try:
+                rep_id = sb.tk.call('set', '::tk::spinbox::Repeater')
+                if rep_id: sb.tk.call('after', 'cancel', rep_id)
+            except Exception: pass
+        sb.bind("<ButtonRelease-1>", _stop_repeat_sb, add="+")
+        sb.bind("<Leave>", _stop_repeat_sb, add="+")
+        sb.bind("<FocusOut>", _stop_repeat_sb, add="+")
         sb.pack(side=tk.LEFT)
 
         def make_focus_handler(e=sb, v=self.vars[key]):

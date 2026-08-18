@@ -105,7 +105,15 @@ class HybridSlider(tk.Frame):
         self.spin = tk.Spinbox(controls, from_=from_, to=to, increment=resolution, textvariable=var,
                                width=6, font=FONT_SET_VAL, bg=COLOR_BG_INPUT, fg="white", 
                                buttonbackground="#78909C", bd=0, highlightthickness=0,
-                               command=self._on_spin)
+                               command=self._on_spin, repeatdelay=0, repeatinterval=0)
+        def _stop_repeat(event=None):
+            try:
+                rep_id = self.spin.tk.call('set', '::tk::spinbox::Repeater')
+                if rep_id: self.spin.tk.call('after', 'cancel', rep_id)
+            except Exception: pass
+        self.spin.bind("<ButtonRelease-1>", _stop_repeat, add="+")
+        self.spin.bind("<Leave>", _stop_repeat, add="+")
+        self.spin.bind("<FocusOut>", _stop_repeat, add="+")
         self.spin.pack(side=tk.RIGHT, padx=5)
         
         self.var.trace_add("write", lambda *args: self._on_change())
