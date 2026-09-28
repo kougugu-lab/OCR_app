@@ -2,8 +2,8 @@ import os
 import platform
 
 # --- バージョン定義 ---
-VERSION = "1.4.2"
-BUILD_DATE = "2026-08-18"
+VERSION = "1.4.3"
+BUILD_DATE = "2026-09-28"
 
 # --- ディレクトリ定義 ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

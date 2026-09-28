@@ -16,6 +16,8 @@ class SettingsDialog:
         self.sw.grab_set()
         self.cm, self.gpio, self.cameras, self.on_save = config_manager, gpio_handler, cameras, on_save_callback
         self.vars, self.leds, self.af_btns, self.has_changes, self.active_entry = {}, {}, {}, False, None
+        self.vars["camera_ref_by_path"] = tk.StringVar(value=self.cm.get("camera_ref_by_path", ""))
+        self.vars["camera_insp_by_path"] = tk.StringVar(value=self.cm.get("camera_insp_by_path", ""))
         
         # メイン画面の動作を一時停止 (§5-143)
         if hasattr(parent, "app_instance"):
@@ -789,38 +791,22 @@ class SettingsDialog:
     def _search_cameras(self):
         self.sw.config(cursor="wait")
         self.sw.update()
-        import cv2
-        available = []
-        
-        # 既に現在取得成功しているカメラ（gui_app側で掴んでいるもの）は先にリストに追加し、DSHOWエラーを回避する
-        working_indices = []
-        if getattr(self, "cameras", None):
-            for cam_key in ["ref", "insp"]:
-                cam = self.cameras.get(cam_key)
-                if cam is not None and getattr(cam, "is_opened", lambda: True)():
-                    try:
-                        idx = int(self.cm.get(f"camera_{cam_key}_id", -1))
-                        if idx >= 0 and idx not in working_indices: 
-                            working_indices.append(idx)
-                    except: pass
-                    
-        for i in range(10):
-            if i in working_indices:
-                available.append(str(i))
-                continue
-                
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW) if IS_WINDOWS else cv2.VideoCapture(i)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret: available.append(str(i))
-                cap.release()
-                
+        from .camera_manager import detect_available_cameras
+        available_devices = detect_available_cameras()
         self.sw.config(cursor="")
-        if available:
-            msg = f"検出されたカメラインデックス: {', '.join(available)}\n\n入力欄に自動反映しますか？\n(※既存の設定は上書きされます)"
+
+        if available_devices:
+            labels = [lbl for _, lbl, _ in available_devices]
+            msg = f"検出されたカメラ:\n" + "\n".join(labels) + "\n\n正解カメラと検査カメラの入力欄に自動反映しますか？\n(※既存の設定は上書きされます)"
             if messagebox.askyesno("カメラ検索結果", msg, parent=self.sw):
-                if len(available) >= 1: self.vars["camera_ref_id"].set(int(available[0]))
-                if len(available) >= 2: self.vars["camera_insp_id"].set(int(available[1]))
+                if len(available_devices) >= 1:
+                    idx0, _, bpath0 = available_devices[0]
+                    self.vars["camera_ref_id"].set(idx0)
+                    self.vars["camera_ref_by_path"].set(bpath0)
+                if len(available_devices) >= 2:
+                    idx1, _, bpath1 = available_devices[1]
+                    self.vars["camera_insp_id"].set(idx1)
+                    self.vars["camera_insp_by_path"].set(bpath1)
                 self._mark_changed()
         else:
             messagebox.showwarning("検索結果", "カメラが見つかりませんでした。", parent=self.sw)

@@ -7,11 +7,13 @@ import threading
 import time
 from datetime import datetime
 from .constants import *
-from .camera_manager import CameraStream
+from .camera_manager import CameraStream, resolve_camera_index_by_path
 from .gpio_handler import GPIOHandler
 from .inspector import Inspector
 from .widgets import ToolTip, HelpWindow
 from typing import Optional, Dict, List, Tuple
+import sys
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,7 @@ class GUIApp:
         self.cam_insp: Optional[CameraStream] = None
         self.is_running = True
         self.is_paused = False
+        self._ng_detail_win: Optional[tk.Toplevel] = None
         
         # UI Elements initialization (for type linting)
         self.header: Optional[tk.Frame] = None
@@ -58,6 +61,32 @@ class GUIApp:
         self._update_clock()
 
     def _init_cameras(self):
+        # Linux環境のカメラ by_path 自動マイグレーション（未設定の場合に物理USBポートを自動記憶）
+        if sys.platform.startswith("linux"):
+            by_path_dir = "/dev/v4l/by-path"
+            if os.path.exists(by_path_dir):
+                by_path_map = {}
+                try:
+                    for fname in sorted(os.listdir(by_path_dir)):
+                        full_p = os.path.join(by_path_dir, fname)
+                        real_p = os.path.realpath(full_p)
+                        if "index0" in fname or real_p not in by_path_map:
+                            by_path_map[real_p] = full_p
+                except Exception:
+                    pass
+
+                migrated = False
+                for ckey in ["camera_ref", "camera_insp"]:
+                    if not self.cm.get(f"{ckey}_by_path"):
+                        c_idx = self.cm.get(f"{ckey}_id", 0 if "ref" in ckey else 1)
+                        dev_node = f"/dev/video{c_idx}"
+                        if dev_node in by_path_map:
+                            self.cm.set(f"{ckey}_by_path", by_path_map[dev_node])
+                            migrated = True
+                            logger.info(f"カメラ '{ckey}' の物理USBポート(by_path)を自動登録しました: {by_path_map[dev_node]}")
+                if migrated:
+                    self.cm.save_config()
+
         res_str = self.cm.get("capture_res", "1920x1080")
         try:
             w, h = map(int, res_str.split('x'))
@@ -66,17 +95,37 @@ class GUIApp:
             w, h = 1920, 1080
             
         logger.info(f"Initializing cameras with resolution {w}x{h}...")
-        self.cam_ref = CameraStream(self.cm.get("camera_ref_id"), w, h, self.cm.get("focus_ref"))
-        self.cam_insp = CameraStream(self.cm.get("camera_insp_id"), w, h, self.cm.get("focus_insp"))
+
+        # by_path から動的解決
+        ref_id = int(self.cm.get("camera_ref_id", 0))
+        ref_by_path = self.cm.get("camera_ref_by_path")
+        if sys.platform.startswith("linux") and ref_by_path:
+            res_id = resolve_camera_index_by_path(ref_by_path)
+            if res_id is not None:
+                if res_id != ref_id:
+                    logger.info(f"正解カメラのインデックスを物理ポートから動的解決: {ref_id} -> {res_id} ({ref_by_path})")
+                ref_id = res_id
+
+        insp_id = int(self.cm.get("camera_insp_id", 1))
+        insp_by_path = self.cm.get("camera_insp_by_path")
+        if sys.platform.startswith("linux") and insp_by_path:
+            res_id = resolve_camera_index_by_path(insp_by_path)
+            if res_id is not None:
+                if res_id != insp_id:
+                    logger.info(f"検査カメラのインデックスを物理ポートから動的解決: {insp_id} -> {res_id} ({insp_by_path})")
+                insp_id = res_id
+
+        self.cam_ref = CameraStream(ref_id, w, h, self.cm.get("focus_ref"))
+        self.cam_insp = CameraStream(insp_id, w, h, self.cm.get("focus_insp"))
         
         # 接続確認 (§Review提案)
         if not self.cam_ref.is_opened():
-            logger.error("Failed to open Reference Camera (index: %s)", self.cm.get("camera_ref_id"))
-            messagebox.showwarning("カメラ警告", f"正解カメラ（ID:{self.cm.get('camera_ref_id')}）の起動に失敗しました。\n設定を確認してください。")
+            logger.error("Failed to open Reference Camera (index: %s)", ref_id)
+            messagebox.showwarning("カメラ警告", f"正解カメラ（ID:{ref_id}）の起動に失敗しました。\n設定を確認してください。")
             
         if not self.cam_insp.is_opened():
-            logger.error("Failed to open Inspection Camera (index: %s)", self.cm.get("camera_insp_id"))
-            messagebox.showwarning("カメラ警告", f"検査カメラ（ID:{self.cm.get('camera_insp_id')}）の起動に失敗しました。\n設定を確認してください。")
+            logger.error("Failed to open Inspection Camera (index: %s)", insp_id)
+            messagebox.showwarning("カメラ警告", f"検査カメラ（ID:{insp_id}）の起動に失敗しました。\n設定を確認してください。")
 
     def _setup_ui(self):
         self.root.title("OCR 照合システム")
@@ -246,6 +295,7 @@ class GUIApp:
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.lst_history.config(yscrollcommand=sb.set)
         self.lst_history.bind("<Double-Button-1>", self._on_history_click)
+        self.lst_history.bind("<Return>", self._on_history_click)
 
         # 4. 操作ボタン (機能別にセクション化)
         btn_container = tk.Frame(p, bg=COLOR_BG_PANEL)
@@ -361,19 +411,37 @@ class GUIApp:
         """ブザー（NG信号・OK信号）を停止"""
         self.gpio.stop_outputs()
 
-    def _on_history_click(self, event):
+    def _on_history_click(self, event=None):
         idx_tuple = self.lst_history.curselection()
-        if not idx_tuple: return
+        if not idx_tuple and event is not None and hasattr(event, "y"):
+            try:
+                idx = self.lst_history.nearest(event.y)
+                if 0 <= idx < self.lst_history.size():
+                    self.lst_history.selection_clear(0, tk.END)
+                    self.lst_history.selection_set(idx)
+                    idx_tuple = (idx,)
+            except Exception:
+                pass
+        if not idx_tuple:
+            return
         idx = idx_tuple[0]
-        if idx < len(self.ng_history):
+        if 0 <= idx < len(self.ng_history):
             msg, img_path = self.ng_history[idx]
             if img_path and os.path.exists(img_path):
                 self._show_ng_image(msg, img_path)
             else:
-                messagebox.showinfo("情報", "該当する画像ファイルが見つかりません。")
+                messagebox.showinfo("情報", "該当する画像ファイルが見つかりません。", parent=self.root)
 
     def _show_ng_image(self, title, path):
+        # 既存の詳細ダイアログがあれば閉じて新しく作成（多重起動・重複防止）
+        if hasattr(self, "_ng_detail_win") and self._ng_detail_win and self._ng_detail_win.winfo_exists():
+            try:
+                self._ng_detail_win.destroy()
+            except Exception:
+                pass
+
         win = tk.Toplevel(self.root)
+        self._ng_detail_win = win
         win.title(f"NG詳細: {os.path.basename(path)}")
         win.geometry("800x650")
         win.configure(bg=COLOR_BG_MAIN)
@@ -385,11 +453,21 @@ class GUIApp:
         canvas = tk.Canvas(win, bg="black", highlightthickness=0)
         canvas.pack(fill=tk.BOTH, expand=True, padx=20, pady=10)
         
-        # 画像読み込み表示
+        # 画像読み込み表示（BILINEAR高速化 & 0バイト・書き込み直後リトライ保護）
         def _load():
             try:
-                img = cv2.imread(path)
-                if img is None: return
+                img = None
+                for retry in range(3):
+                    if not os.path.exists(path) or os.path.getsize(path) == 0:
+                        time.sleep(0.08)
+                        continue
+                    img = cv2.imread(path)
+                    if img is not None:
+                        break
+                    time.sleep(0.08)
+                if img is None:
+                    return
+
                 img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
                 
                 win.update_idletasks()
@@ -397,7 +475,8 @@ class GUIApp:
                 if cw < 10: cw, ch = 760, 500
                 
                 pil_img = PIL.Image.fromarray(img)
-                pil_img.thumbnail((cw, ch), PIL.Image.LANCZOS)
+                # 高速リサイズ (BILINEAR) でラズパイのCPU負荷を軽減しUIフリーズを防ぐ
+                pil_img.thumbnail((cw, ch), PIL.Image.BILINEAR)
                 img_tk = PIL.ImageTk.PhotoImage(pil_img)
                 canvas.image = img_tk
                 canvas.create_image(cw//2, ch//2, image=img_tk, anchor=tk.CENTER)
@@ -405,8 +484,14 @@ class GUIApp:
                 logger.error(f"Failed to load NG image: {e}")
         
         win.after(100, _load)
+
+        def _close_win():
+            self._ng_detail_win = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _close_win)
         tk.Button(win, text="閉じる", font=FONT_BOLD, bg="#546E7A", fg="white", 
-                  relief=tk.FLAT, padx=30, command=win.destroy).pack(pady=10)
+                  relief=tk.FLAT, padx=30, command=_close_win).pack(pady=10)
 
     # --- プレビュー表示 ---
     def _update_preview(self):
